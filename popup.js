@@ -132,72 +132,102 @@ async function fetchMetadataSafe(ids, token, batchSize = 10) {
   return results;
 }
 
-document.getElementById("topSendersBtn").addEventListener("click", async () => {
+// =======================================
+// ACCURATE + RATE-SAFE TOP SENDERS
+// =======================================
+document.getElementById("topSendersBtn").addEventListener("click", getTopSendersAccurate);
+
+async function getTopSendersAccurate() {
+  const out = document.getElementById("topSendersResult");
+  out.textContent = "Scanning… hang tight 👀";
+
+  //let token;
+  //try {
+  //  token = await getToken();
+  //} catch {
+  //  out.textContent = "Authentication failed.";
+  //  return;
+  //}
+
   const senderCounts = {};
-  const resultEl = document.getElementById("topSendersResult");
-  resultEl.textContent = "Scanning… hang tight 👀";
-
-  const token = await getToken();
-  if (!token) {
-    resultEl.textContent = "Auth failed";
-    return;
-  }
-
   let nextPageToken = null;
   let totalProcessed = 0;
 
+  const batchSize = 25;     // low & safe
+  const batchDelay = 120;   // gentle rate control
+
   try {
+    // Get fresh token from background
+    const response = await new Promise(resolve =>
+      chrome.runtime.sendMessage({ action: "auth" }, resolve)
+    );
+    if (response.error) throw new Error(response.error);
+    const token = response.token;
+
     do {
       const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
       url.searchParams.set("q", "-category:spam");
       url.searchParams.set("maxResults", "500");
       if (nextPageToken) url.searchParams.set("pageToken", nextPageToken);
 
-      const listRes = await fetch(url, {
+      const res = await fetch(url.toString(), {
         headers: { Authorization: `Bearer ${token}` }
       });
 
-      const listData = await listRes.json();
-      const messages = listData.messages || [];
+      if (!res.ok) throw new Error("List fetch failed");
 
-      // Get IDs cleanly
-      const ids = messages.map(m => m.id);
+      const data = await res.json();
+      const batch = data.messages || [];
 
-      // Metadata, rate-safe, controlled batches
-      const metadata = await fetchMetadataSafe(ids, token);
+      // Process metadata in 25-request batches
+      for (let i = 0; i < batch.length; i += batchSize) {
+        const chunk = batch.slice(i, i + batchSize);
 
-      for (const detail of metadata) {
-        if (!detail || !detail.payload || !detail.payload.headers) continue;
+        const reqs = chunk.map(msg =>
+          fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=From`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          )
+            .then(r => (r.ok ? r.json() : null))
+            .catch(_ => null)
+        );
 
-        const header = detail.payload.headers.find(h => h.name === "From");
-        if (!header) continue;
+        const details = await Promise.all(reqs);
 
-        const match = header.value.match(/<(.+?)>/);
-        const email = match ? match[1] : header.value;
+        for (const d of details) {
+          if (!d || !d.payload) continue;
 
-        senderCounts[email] = (senderCounts[email] || 0) + 1;
-        totalProcessed++;
+          const header = d.payload.headers.find(h => h.name === "From");
+          if (!header) continue;
+
+          const email = (header.value.match(/<(.+?)>/) || [null, header.value])[1];
+          senderCounts[email] = (senderCounts[email] || 0) + 1;
+          totalProcessed++;
+        }
+
+        out.textContent = `Processed ${totalProcessed} emails…`;
+
+        await new Promise(res => setTimeout(res, batchDelay));
       }
 
-      resultEl.textContent = `Processed ${totalProcessed} emails…`;
+      nextPageToken = data.nextPageToken;
 
-      nextPageToken = listData.nextPageToken;
     } while (nextPageToken);
 
-    // Ranking
-    const top = Object.entries(senderCounts)
+    // Sort & show top 5
+    const top5 = Object.entries(senderCounts)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5);
 
-    let output = `Top 5 senders (from ${totalProcessed} emails):\n\n`;
-    top.forEach(([email, count], i) => {
-      output += `${i + 1}. ${email} — ${count}\n`;
+    let txt = `Top senders (from ${totalProcessed} emails):\n\n`;
+    top5.forEach(([email, count], i) => {
+      txt += `${i + 1}. ${email} — ${count}\n`;
     });
 
-    resultEl.textContent = output;
+    out.textContent = txt;
 
-  } catch (e) {
-    console.error(e);
-    resultEl.textContent = "Error during scan";
+  } catch (err) {
+    console.error(err);
+    out.textContent = "Error scanning 😢";
   }
-});
+}
