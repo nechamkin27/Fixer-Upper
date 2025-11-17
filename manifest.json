@@ -3,7 +3,10 @@
   "name": "Gmail Bulk Delete",
   "version": "1.0",
   "description": "Delete emails from a specific sender in bulk.",
-  "permissions": ["identity", "storage"],
+  "permissions": ["identity", "storage", "alarms"],
+  "host_permissions": [
+    "https://www.googleapis.com/*"
+  ],
   "oauth2": {
     "client_id": "1048045525974-eoku0strjgc79fe71ah6pp12ak7lgv1m.apps.googleusercontent.com",
     "scopes": [

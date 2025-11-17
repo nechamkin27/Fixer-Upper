@@ -135,99 +135,81 @@ async function fetchMetadataSafe(ids, token, batchSize = 10) {
 // =======================================
 // ACCURATE + RATE-SAFE TOP SENDERS
 // =======================================
-document.getElementById("topSendersBtn").addEventListener("click", getTopSendersAccurate);
-
-async function getTopSendersAccurate() {
+document.getElementById("topSendersBtn").addEventListener("click", () => {
   const out = document.getElementById("topSendersResult");
-  out.textContent = "Scanning… hang tight 👀";
+  out.textContent = "Starting background scan…";
+  document.getElementById("topSendersBtn").disabled = true;
 
-  //let token;
-  //try {
-  //  token = await getToken();
-  //} catch {
-  //  out.textContent = "Authentication failed.";
-  //  return;
-  //}
+  chrome.runtime.sendMessage({ action: "startTopSenders" }, resp => {
+    if (chrome.runtime.lastError) {
+      out.textContent = "Failed to start background scan.";
+      console.error(chrome.runtime.lastError);
+      document.getElementById("topSendersBtn").disabled = false;
+      return;
+    }
 
-  const senderCounts = {};
-  let nextPageToken = null;
-  let totalProcessed = 0;
+    if (resp && resp.started) {
+      out.textContent = "Background scan started — will update progress here.";
+    } else {
+      out.textContent = "Background did not acknowledge start.";
+      document.getElementById("topSendersBtn").disabled = false;
+    }
+  });
+});
 
-  const batchSize = 25;     // low & safe
-  const batchDelay = 120;   // gentle rate control
+// Listen for progress and final results from the background service worker
+chrome.runtime.onMessage.addListener((request) => {
+  const out = document.getElementById("topSendersResult");
+  const btn = document.getElementById("topSendersBtn");
 
-  try {
-    // Get fresh token from background
-    const response = await new Promise(resolve =>
-      chrome.runtime.sendMessage({ action: "auth" }, resolve)
-    );
-    if (response.error) throw new Error(response.error);
-    const token = response.token;
-
-    do {
-      const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
-      url.searchParams.set("q", "-category:spam");
-      url.searchParams.set("maxResults", "500");
-      if (nextPageToken) url.searchParams.set("pageToken", nextPageToken);
-
-      const res = await fetch(url.toString(), {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      if (!res.ok) throw new Error("List fetch failed");
-
-      const data = await res.json();
-      const batch = data.messages || [];
-
-      // Process metadata in 25-request batches
-      for (let i = 0; i < batch.length; i += batchSize) {
-        const chunk = batch.slice(i, i + batchSize);
-
-        const reqs = chunk.map(msg =>
-          fetch(
-            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=From`,
-            { headers: { Authorization: `Bearer ${token}` } }
-          )
-            .then(r => (r.ok ? r.json() : null))
-            .catch(_ => null)
-        );
-
-        const details = await Promise.all(reqs);
-
-        for (const d of details) {
-          if (!d || !d.payload) continue;
-
-          const header = d.payload.headers.find(h => h.name === "From");
-          if (!header) continue;
-
-          const email = (header.value.match(/<(.+?)>/) || [null, header.value])[1];
-          senderCounts[email] = (senderCounts[email] || 0) + 1;
-          totalProcessed++;
-        }
-
-        out.textContent = `Processed ${totalProcessed} emails…`;
-
-        await new Promise(res => setTimeout(res, batchDelay));
-      }
-
-      nextPageToken = data.nextPageToken;
-
-    } while (nextPageToken);
-
-    // Sort & show top 5
-    const top5 = Object.entries(senderCounts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5);
-
-    let txt = `Top senders (from ${totalProcessed} emails):\n\n`;
-    top5.forEach(([email, count], i) => {
-      txt += `${i + 1}. ${email} — ${count}\n`;
-    });
-
-    out.textContent = txt;
-
-  } catch (err) {
-    console.error(err);
-    out.textContent = "Error scanning 😢";
+  if (request.action === "progress") {
+    const lines = [`Processed ${request.processed} emails…`, "", "Top (partial):"];
+    request.top.forEach((t, i) => lines.push(`${i + 1}. ${t.email} — ${t.count}`));
+    out.textContent = lines.join("\n");
   }
-}
+
+  if (request.action === "displayFrequentSenders") {
+    out.textContent = `Final results (top ${Math.min(50, request.frequentSenders.length)}):\n\n` + request.frequentSenders.slice(0, 50).join("\n");
+    if (btn) btn.disabled = false;
+  }
+});
+
+// Ensure popup shows cached results on open and allow cancelling the background job
+document.addEventListener('DOMContentLoaded', () => {
+  const out = document.getElementById('topSendersResult');
+
+  // Request any stored aggregated sender counts from background
+  chrome.runtime.sendMessage({ action: 'getStoredSenders' }, resp => {
+    if (chrome.runtime.lastError) {
+      console.warn('Could not retrieve stored senders:', chrome.runtime.lastError);
+      return;
+    }
+
+    const counts = (resp && resp.senderCounts) || {};
+    const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    if (entries.length === 0) {
+      out.textContent = out.textContent || 'No cached results.';
+    } else {
+      out.textContent = `Cached results (top ${Math.min(50, entries.length)}):\n\n` +
+        entries.slice(0, 50).map((e, i) => `${i + 1}. ${e[0]} — ${e[1]}`).join('\n');
+    }
+  });
+
+  // Cancel button handler
+  const cancelBtn = document.getElementById('cancelTopSendersBtn');
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', () => {
+      chrome.runtime.sendMessage({ action: 'cancelTopSenders' }, resp => {
+        if (chrome.runtime.lastError) {
+          out.textContent = 'Failed to request cancel.';
+          console.error(chrome.runtime.lastError);
+          return;
+        }
+        out.textContent = 'Cancel requested.';
+        // re-enable start button
+        const startBtn = document.getElementById('topSendersBtn');
+        if (startBtn) startBtn.disabled = false;
+      });
+    });
+  }
+});
