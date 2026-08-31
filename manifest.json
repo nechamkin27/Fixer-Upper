@@ -5,7 +5,7 @@
   "description": "Delete emails from a specific sender in bulk.",
   "permissions": ["identity", "storage", "alarms"],
   "host_permissions": [
-    "https://www.googleapis.com/*"
+    "https://gmail.googleapis.com/*"
   ],
   "oauth2": {
     "client_id": "1048045525974-eoku0strjgc79fe71ah6pp12ak7lgv1m.apps.googleusercontent.com",
@@ -13,8 +13,9 @@
       "https://mail.google.com/"
     ]
   },
-  "action": {
-    "default_popup": "popup.html"
+  "action": { "default_icon": "icon.png" },
+  "side_panel": {
+    "default_path": "panel.html"
   },
   "background": {
     "service_worker": "background.js"

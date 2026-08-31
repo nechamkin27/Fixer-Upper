@@ -1,0 +1,5 @@
+# Scan output - contains real email addresses from the user's inbox, never commit
+*.txt
+
+# Stray editor/OS backup copies
+* - Copy.*
